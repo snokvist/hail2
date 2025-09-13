@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>haild controller scanner</title>
+<style>
+  :root{
+    --bg:#0b0f14;--panel:#111722;--text:#e9eef5;--muted:#aab6c8;--ok:#3ad29f;--warn:#f7c948;--err:#ff6b6b;
+    --chip:#2b3242;--btn:#1f2a3c;--btnh:#27354b;--border:#1b2536;--ink:#0d1320;--tag:#4c6fff
+  }
+  *{box-sizing:border-box;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
+  body{margin:0;background:var(--bg);color:var(--text)}
+  header{position:sticky;top:0;z-index:10;padding:12px 14px;background:linear-gradient(180deg,#101827,#0d131e);border-bottom:1px solid var(--border)}
+  h1{margin:0;font-size:18px}
+  main{padding:14px;display:grid;gap:12px}
+  section{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:12px}
+  input,select{background:var(--ink);color:var(--text);border:1px solid #212b3d;border-radius:10px;padding:8px 10px;outline:none}
+  button{background:var(--btn);color:var(--text);border:1px solid #2a3950;padding:8px 12px;border-radius:10px;cursor:pointer}
+  button:hover{background:var(--btnh)}
+  .grid{display:grid;grid-template-columns: repeat(auto-fill,minmax(280px,1fr));gap:12px}
+  .card{background:var(--ink);border:1px solid #212b3d;border-radius:10px;padding:12px}
+  .muted{color:var(--muted)}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .small{font-size:12px}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+  .chip{font-size:11px;padding:4px 8px;border-radius:999px;background:var(--chip);border:1px solid #38455e}
+  .ok{color:var(--ok)}
+  .err{color:var(--err)}
+  .topbar{display:flex;gap:10px;align-items:center;justify-content:space-between}
+  .left, .right{display:flex;gap:8px;align-items:center}
+  .badge{font-size:11px;padding:2px 6px;border-radius:6px;border:1px solid #38455e;background:#0f1624}
+  .link{color:#bcd3ff;text-decoration:none}
+  #consoleWrap{display:none;padding:0;border:none;background:transparent}
+  #consoleBar{display:none;align-items:center;gap:10px}
+  #consoleFrame{width:100%;height:calc(100vh - 64px);border:0;border-top:1px solid var(--border)}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
+</style>
+
+<header>
+  <div class="topbar">
+    <div class="left">
+      <h1>haild controller scanner</h1>
+      <span id="scanStat" class="muted small"></span>
+    </div>
+    <div id="consoleBar" class="right">
+      <span class="badge">Connected</span>
+      <span id="connAlias" class="mono"></span>
+      <span class="muted">@</span>
+      <span id="connAddr" class="mono"></span>
+      <button id="btnExpand">Expand scanner</button>
+      <a id="btnPopout" class="link small" href="#" target="_blank" rel="noopener">open in new tab ↗</a>
+      <button id="btnDisconnect">Disconnect</button>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section id="scanCtl">
+    <div class="row">
+      <label>Subnet (CIDR /24)</label>
+      <input id="subnet" type="text" value="192.168.2.0" />
+      <label>Port</label>
+      <input id="port" type="number" value="8080" style="width:100px" />
+      <button id="scan">Scan</button>
+      <span id="stat" class="muted small"></span>
+    </div>
+    <div class="small muted" style="margin-top:6px">
+      Tip: Probes <code>/health</code>. If your nodes do not include CORS headers, health details may be marked "CORS blocked"; enable <code>Access-Control-Allow-Origin: *</code> on the node to show inline details.
+    </div>
+  </section>
+
+  <section id="scanResults">
+    <strong>Found controllers</strong>
+    <div id="results" class="grid" style="margin-top:8px"></div>
+  </section>
+
+  <section id="consoleWrap">
+    <iframe id="consoleFrame" src="about:blank" referrerpolicy="no-referrer"></iframe>
+  </section>
+</main>
+
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  const subnetEl = $('#subnet');
+  const portEl = $('#port');
+  const statEl = $('#stat');
+  const scanStatEl = $('#scanStat');
+  const resultsEl = $('#results');
+  const scanCtl = $('#scanCtl');
+  const scanResults = $('#scanResults');
+  const consoleWrap = $('#consoleWrap');
+  const consoleBar = $('#consoleBar');
+  const consoleFrame = $('#consoleFrame');
+  const connAlias = $('#connAlias');
+  const connAddr = $('#connAddr');
+  const btnDisconnect = $('#btnDisconnect');
+  const btnExpand = $('#btnExpand');
+  const btnPopout = $('#btnPopout');
+
+  function ipFromBase(base, host) {
+    const parts = base.split('.').map(x=>parseInt(x,10));
+    parts[3] = host;
+    return parts.join('.');
+  }
+
+  function delay(ms){return new Promise(r=>setTimeout(r,ms));}
+
+  async function probeReachable(ip, port, timeoutMs=800) {
+    // Fast reachability probe using no-cors; we cannot read the body here
+    const url = `http://${ip}:${port}/health`;
+    const ctrl = new AbortController();
+    const t = setTimeout(()=>ctrl.abort(), timeoutMs);
+    try {
+      await fetch(url, {mode:'no-cors', signal: ctrl.signal});
+      clearTimeout(t);
+      return {ok:true};
+    } catch (e) {
+      clearTimeout(t);
+      return {ok:false};
+    }
+  }
+
+  async function fetchHealth(ip, port, timeoutMs=1200){
+    const url = `http://${ip}:${port}/health`;
+    const ctrl = new AbortController();
+    const t = setTimeout(()=>ctrl.abort(), timeoutMs);
+    try{
+      const r = await fetch(url, {mode:'cors', signal: ctrl.signal, headers:{'Accept':'application/json'}});
+      clearTimeout(t);
+      if (!r.ok) throw new Error('HTTP '+r.status);
+      return await r.json();
+    }catch(e){
+      clearTimeout(t);
+      return {corsBlocked:true};
+    }
+  }
+
+  function chip(text){
+    return `<span class="chip">${escapeHtml(text)}</span>`;
+  }
+
+  function escapeHtml(s){
+    return (s+"").replace(/[&<>\"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+  }
+
+  function renderCardShell(ip, port){
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.id = `card-${ip.replaceAll('.', '-')}-${port}`;
+    card.innerHTML = `
+      <div class="row" style="justify-content:space-between">
+        <div>
+          <div><strong>${ip}:${port}</strong></div>
+          <div class="small muted" id="reach-${ip.replaceAll('.', '-')}-${port}">reachable</div>
+        </div>
+        <div class="row">
+          <button data-act="connect" data-ip="${ip}" data-port="${port}">Connect</button>
+          <a class="link small" href="http://${ip}:${port}/" target="_blank" rel="noopener">↗</a>
+        </div>
+      </div>
+      <div class="small muted" id="alias-${ip.replaceAll('.', '-')}-${port}" style="margin-top:6px"></div>
+      <div class="chips" id="roles-${ip.replaceAll('.', '-')}-${port}" aria-label="roles"></div>
+      <div class="chips" id="caps-${ip.replaceAll('.', '-')}-${port}" aria-label="caps"></div>
+      <div id="health-${ip.replaceAll('.', '-')}-${port}" class="small" style="margin-top:8px;line-height:1.35"></div>
+    `;
+    // delegate connect button
+    card.querySelector('[data-act="connect"]').addEventListener('click', (ev)=>{
+      const ip = ev.currentTarget.getAttribute('data-ip');
+      const port = ev.currentTarget.getAttribute('data-port');
+      connectTo(ip, port);
+    });
+    return card;
+  }
+
+  function populateHealth(ip, port, health){
+    const suf = `${ip.replaceAll('.', '-')}-${port}`;
+    const aliasEl = document.getElementById(`alias-${suf}`);
+    const rolesEl = document.getElementById(`roles-${suf}`);
+    const capsEl = document.getElementById(`caps-${suf}`);
+    const healthEl = document.getElementById(`health-${suf}`);
+
+    if (health.corsBlocked){
+      healthEl.innerHTML = `<span class="muted">Health details unavailable (CORS blocked). <a class="link" href="http://${ip}:${port}/health" target="_blank" rel="noopener">open /health ↗</a></span>`;
+      return;
+    }
+
+    const alias = health.alias || '(unknown)';
+    aliasEl.textContent = `alias: ${alias}`;
+
+    if (Array.isArray(health.roles)){
+      rolesEl.innerHTML = health.roles.map(chip).join('');
+    }
+    if (Array.isArray(health.caps)){
+      capsEl.innerHTML = health.caps.map(c=>`<span class="chip" title="capability">${escapeHtml(c)}</span>`).join('');
+    }
+
+    // Pretty key bits
+    const bits = [];
+    if (typeof health.ok !== 'undefined') bits.push(`<span class="${health.ok? 'ok':'err'}">ok: ${health.ok}</span>`);
+    if (health.version) bits.push(`version: <span class="mono">${escapeHtml(health.version)}</span>`);
+    if (health.uptime) bits.push(`uptime: ${escapeHtml(health.uptime)}`);
+
+    // Fallback: show known sample fields if present
+    bits.push(`raw: <span class="mono">${escapeHtml(JSON.stringify(health))}</span>`);
+    healthEl.innerHTML = bits.join(' · ');
+  }
+
+  async function scan(){
+    resultsEl.innerHTML = '';
+    const base = subnetEl.value.trim() || '192.168.2.0';
+    const port = parseInt(portEl.value,10) || 8080;
+
+    const ips = [];
+    for (let i=1; i<=254; i++) ips.push(ipFromBase(base, i));
+
+    let alive = 0, done = 0;
+    const concurrency = 32;
+    statEl.textContent = `Probing ${ips.length} hosts…`;
+    scanStatEl.textContent = '';
+
+    async function worker(start){
+      for (let i=start; i<ips.length; i+=concurrency){
+        const ip = ips[i];
+        const reachable = await probeReachable(ip, port);
+        done++;
+        if (reachable.ok){
+          alive++;
+          const card = renderCardShell(ip, port);
+          resultsEl.appendChild(card);
+          // Try to fetch and render health JSON (requires CORS from node)
+          fetchHealth(ip, port).then(h => populateHealth(ip, port, h));
+        }
+        statEl.textContent = `Progress ${done}/${ips.length} — found ${alive}`;
+      }
+    }
+
+    await Promise.all([...Array(concurrency)].map((_,k)=>worker(k)));
+    statEl.textContent = `Done — found ${alive} controller(s).`;
+  }
+
+  function connectTo(ip, port){
+    const url = `http://${ip}:${port}/`;
+    consoleFrame.src = url;
+    connAddr.textContent = `${ip}:${port}`;
+    // Try to show alias if we fetched it already
+    const aliasEl = document.getElementById(`alias-${ip.replaceAll('.', '-')}-${port}`);
+    connAlias.textContent = aliasEl && aliasEl.textContent ? aliasEl.textContent.replace(/^alias:\s*/, '') : '(alias?)';
+
+    // Minimize scanner UI -> show console bar + iframe
+    scanCtl.style.display = 'none';
+    scanResults.style.display = 'none';
+    consoleWrap.style.display = 'block';
+    consoleBar.style.display = 'flex';
+
+    // Update popout link
+    btnPopout.href = url;
+  }
+
+  function disconnect(){
+    consoleFrame.src = 'about:blank';
+    consoleWrap.style.display = 'none';
+    consoleBar.style.display = 'none';
+    scanCtl.style.display = '';
+    scanResults.style.display = '';
+  }
+
+  function expandScanner(){
+    // Show scanner (results remain in DOM) while keeping connection active in iframe
+    scanCtl.style.display = '';
+    scanResults.style.display = '';
+  }
+
+  // events
+  $('#scan').addEventListener('click', scan);
+  btnDisconnect.addEventListener('click', disconnect);
+  btnExpand.addEventListener('click', expandScanner);
+
+  // Optional: auto-scan on load after a short delay
+  // delay(200).then(scan);
+})();
+</script>
+</html>

@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>haild console</title>
+<style>
+  :root { --bg:#0b0f14; --panel:#111722; --text:#e9eef5; --muted:#aab6c8; --ok:#3ad29f; --warn:#f7c948; --err:#ff6b6b; --tag:#4c6fff; --chip:#2b3242; --btn:#1f2a3c; --btnh:#27354b; }
+  * { box-sizing: border-box; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Apple Color Emoji","Segoe UI Emoji"; }
+  body { margin:0; background:var(--bg); color:var(--text); }
+  header { padding:14px 16px; background:linear-gradient(180deg, #101827, #0d131e); border-bottom:1px solid #1b2536; position:sticky; top:0; z-index:5; }
+  h1 { margin:0; font-size:18px; letter-spacing:.2px; }
+  main { display:grid; grid-template-columns: 380px 1fr; gap:14px; padding:14px; }
+  section { background:var(--panel); border:1px solid #1b2536; border-radius:14px; padding:12px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  label { font-size:12px; color:var(--muted); margin-right:6px; }
+  input[type=text], input[type=number], textarea, select {
+    background:#0d1320; color:var(--text); border:1px solid #212b3d; border-radius:10px; padding:8px 10px; outline:none;
+  }
+  input[type=text]:focus, textarea:focus, select:focus { border-color:#345; box-shadow:0 0 0 2px #22324a inset; }
+  button {
+    background:var(--btn); color:var(--text); border:1px solid #2a3950; padding:8px 12px; border-radius:10px; cursor:pointer;
+  }
+  button:hover { background:var(--btnh); }
+  .pill { background:var(--chip); border:1px solid #2a3950; padding:3px 8px; border-radius:999px; font-size:12px; }
+  .tag { background:#213166; color:#cfd9ff; border:1px solid #324889; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .err { color:var(--err); }
+  .stack { display:flex; flex-direction:column; gap:8px; }
+  .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap:8px; }
+  .log { height:52vh; overflow:auto; background:#0b101b; border:1px solid #182238; border-radius:10px; padding:8px; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size:12px; line-height:1.35; }
+  .log .line { white-space:pre-wrap; word-break:break-word; margin:0; padding:4px 6px; border-bottom:1px dashed #1a2436; }
+  .log .line:last-child { border-bottom:none; }
+  .kbd { font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background:#0e1625; border:1px solid #23314a; padding:2px 6px; border-radius:6px; }
+  .hl { color:#a5b8ff; }
+  .small { font-size:12px; color:var(--muted); }
+  .mono { font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  .hint { margin-top:6px; color:#93a5c6; font-size:12px; }
+  .flex1 { flex:1 1 auto; }
+  .sep { height:1px; background:#1b2536; margin:8px 0; }
+  .nodes { display:flex; flex-wrap:wrap; gap:6px; }
+  .node { background:#0d1320; border:1px solid #212b3d; border-radius:10px; padding:6px 8px; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>haild console <span class="small">– quick test UI for /health, /nodes, /events, /send</span></h1>
+  </header>
+
+  <main>
+    <!-- LEFT: controls -->
+    <section class="stack">
+      <div class="stack">
+        <div class="row">
+          <label>Base URL</label>
+          <input id="baseUrl" type="text" value="http://127.0.0.1:8080" class="flex1" placeholder="http://host:8080" />
+        </div>
+        <div class="row">
+          <button id="btnConnectSSE">Connect events</button>
+          <button id="btnDisconnectSSE">Disconnect</button>
+          <span id="sseStatus" class="pill tag">SSE: idle</span>
+        </div>
+        <div class="row">
+          <button id="btnHealth">GET /health</button>
+          <button id="btnNodes">GET /nodes</button>
+        </div>
+      </div>
+
+      <div class="sep"></div>
+
+      <div class="stack">
+        <strong>Quick send</strong>
+        <div class="grid2">
+          <button id="btnHBsigned">Broadcast HB (signed JSON)</button>
+          <button id="btnHBunsigned">Broadcast HB (unsigned JSON)</button>
+          <button id="btnExecOn">EXEC /sys/led {"state":"on"}</button>
+          <button id="btnExecToggle">EXEC /sys/led {"state":"toggle"}</button>
+        </div>
+        <div class="hint">EXEC uses compact TLV app payload and will be accepted only if signed on the receiver.</div>
+      </div>
+
+      <div class="sep"></div>
+
+      <div class="stack">
+        <strong>Custom send</strong>
+        <div class="row">
+          <label>dst</label>
+          <input id="dst" type="text" value="broadcast" placeholder="broadcast or 192.168.2.203:27182" class="flex1" />
+        </div>
+        <div class="row">
+          <label>method</label>
+          <input id="method" type="text" value="EXEC" />
+          <label>path</label>
+          <input id="path" type="text" value="/sys/led" class="flex1" />
+        </div>
+        <div class="row">
+          <label>args (JSON)</label>
+          <input id="args" type="text" value='{"state":"on"}' class="flex1 mono" />
+        </div>
+        <div class="row">
+          <label>ct</label>
+          <select id="ct">
+            <option value="tlv" selected>tlv</option>
+            <option value="json">json</option>
+          </select>
+          <label class="small">signed</label><input id="signed" type="checkbox" checked />
+          <label class="small">ack</label><input id="ack" type="checkbox" checked />
+          <label class="small">relay</label><input id="relay" type="checkbox" checked />
+          <button id="btnSend">POST /send</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- RIGHT: event log + nodes -->
+    <section class="stack">
+      <div class="row">
+        <strong>Event log</strong>
+        <span class="small">(from <span class="kbd">GET /events</span>)</span>
+        <span id="logCount" class="pill">0</span>
+        <span class="flex1"></span>
+        <button id="btnClear">Clear</button>
+      </div>
+      <div id="log" class="log" aria-live="polite"></div>
+
+      <div class="sep"></div>
+
+      <div class="row">
+        <strong>Nodes</strong>
+        <span class="small">(from <span class="kbd">GET /nodes</span>)</span>
+        <span class="flex1"></span>
+        <button id="btnNodes2">Refresh</button>
+      </div>
+      <div id="nodes" class="nodes"></div>
+    </section>
+  </main>
+
+<script>
+(() => {
+  const $ = sel => document.querySelector(sel);
+  const baseUrlEl = $('#baseUrl');
+  const sseStatus = $('#sseStatus');
+  const logEl = $('#log');
+  const logCount = $('#logCount');
+  const nodesEl = $('#nodes');
+
+  let es = null;
+  let lines = 0;
+
+  function setSSE(status, cls="tag") {
+    sseStatus.textContent = `SSE: ${status}`;
+    sseStatus.className = `pill ${cls}`;
+  }
+
+  function safeJSON(str) {
+    try { return JSON.stringify(JSON.parse(str)); }
+    catch { return JSON.stringify(String(str)); } // stringify as string
+  }
+
+  function logJSON(prefix, obj, cls = "") {
+    const line = document.createElement('div');
+    line.className = `line ${cls}`;
+    // Pretty, but compact-ish
+    const text = (typeof obj === 'string') ? obj : JSON.stringify(obj);
+    line.textContent = `${prefix ? prefix + " " : ""}${text}`;
+    logEl.appendChild(line);
+    // cap at ~1000 lines
+    lines++;
+    logCount.textContent = lines;
+    if (logEl.children.length > 1000) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  async function apiGet(path) {
+    const url = new URL(path, baseUrlEl.value).toString();
+    const r = await fetch(url, { method: 'GET' });
+    const t = await r.text();
+    try { return JSON.parse(t); } catch { return t; }
+  }
+  async function apiPost(path, bodyObj) {
+    const url = new URL(path, baseUrlEl.value).toString();
+    const body = JSON.stringify(bodyObj);
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body
+    });
+    const t = await r.text();
+    try { return JSON.parse(t); } catch { return t; }
+  }
+
+  // ==== SSE ====
+  $('#btnConnectSSE').addEventListener('click', () => {
+    if (es) try { es.close(); } catch {}
+    const url = new URL('/events', baseUrlEl.value).toString();
+    es = new EventSource(url);
+    setSSE('connecting…', 'tag');
+
+    es.onopen = () => setSSE('connected', 'ok');
+    es.onerror = () => setSSE('error', 'err');
+    es.onmessage = (ev) => {
+      let obj = ev.data;
+      try { obj = JSON.parse(ev.data); } catch {}
+      logJSON('', obj);
+    };
+  });
+  $('#btnDisconnectSSE').addEventListener('click', () => {
+    if (es) { es.close(); es = null; }
+    setSSE('idle', 'tag');
+  });
+
+  // ==== GET helpers ====
+  async function doHealth() {
+    try {
+      const j = await apiGet('/health');
+      logJSON('HEALTH', j, 'hl');
+    } catch (e) {
+      logJSON('HEALTH ERR', String(e), 'err');
+    }
+  }
+  async function doNodes() {
+    try {
+      const j = await apiGet('/nodes');
+      nodesEl.innerHTML = '';
+      if (j && j.nodes && Array.isArray(j.nodes)) {
+        j.nodes.forEach(n => {
+          const d = document.createElement('div');
+          d.className = 'node';
+          d.innerHTML =
+            `<div class="mono">${n.src}</div>
+             <div class="small">${n.ip}:${n.port}</div>
+             <div class="small">${n.age_ms} ms</div>`;
+          nodesEl.appendChild(d);
+        });
+      }
+      logJSON('NODES', j, 'hl');
+    } catch (e) {
+      logJSON('NODES ERR', String(e), 'err');
+    }
+  }
+
+  $('#btnHealth').addEventListener('click', doHealth);
+  $('#btnNodes').addEventListener('click', doNodes);
+  $('#btnNodes2').addEventListener('click', doNodes);
+
+  // ==== Quick send ====
+  async function sendHB(signedMsg) {
+    const body = {
+      dst: 'broadcast',
+      method: 'DATA',
+      path: '/',
+      args: safeJSON('{"hb":1}'),
+      ct: 'json',
+      signed: !!signedMsg,
+      ack: true,
+      relay: true,
+      req: Math.floor(Math.random()*1e7)
+    };
+    // The daemon's /send ignores method when ct=json unless used by your backend,
+    // but we keep a stable shape here.
+    const res = await apiPost('/send', body);
+    logJSON('SEND HB', res);
+  }
+
+  async function sendExec(state) {
+    const body = {
+      dst: 'broadcast',
+      method: 'EXEC',
+      path: '/sys/led',
+      args: safeJSON(JSON.stringify({state})), // escaped JSON string for daemon
+      ct: 'tlv',
+      signed: true,   // EXEC must be signed to be accepted by receivers
+      ack: true,
+      relay: false,
+      req: Math.floor(Math.random()*1e7)
+    };
+    const res = await apiPost('/send', body);
+    logJSON(`SEND EXEC state=${state}`, res);
+  }
+
+  $('#btnHBsigned').addEventListener('click', () => sendHB(true));
+  $('#btnHBunsigned').addEventListener('click', () => sendHB(false));
+  $('#btnExecOn').addEventListener('click', () => sendExec('on'));
+  $('#btnExecToggle').addEventListener('click', () => sendExec('toggle'));
+
+  // ==== Custom send ====
+  $('#btnSend').addEventListener('click', async () => {
+    const dst = $('#dst').value.trim() || 'broadcast';
+    const method = $('#method').value.trim() || 'EXEC';
+    const path = $('#path').value.trim() || '/';
+    const args = $('#args').value.trim(); // JSON
+    const ct = $('#ct').value;
+    const signed = $('#signed').checked;
+    const ack = $('#ack').checked;
+    const relay = $('#relay').checked;
+
+    const body = {
+      dst, method, path,
+      args: safeJSON(args || '{}'),
+      ct, signed, ack, relay,
+      req: Math.floor(Math.random()*1e7)
+    };
+    try {
+      const res = await apiPost('/send', body);
+      logJSON('SEND', res);
+    } catch (e) {
+      logJSON('SEND ERR', String(e), 'err');
+    }
+  });
+
+  // misc
+  $('#btnClear').addEventListener('click', () => { logEl.innerHTML=''; lines=0; logCount.textContent='0'; });
+
+  // small helpers on load
+  (async () => {
+    // Try to connect SSE immediately if default URL is okay
+    // You can comment this out if you prefer manual connect.
+    $('#btnConnectSSE').click();
+    doHealth();
+    doNodes();
+  })();
+})();
+</script>
+</body>
+</html>
